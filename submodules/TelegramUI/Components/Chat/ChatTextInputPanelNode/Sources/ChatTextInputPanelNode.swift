@@ -58,6 +58,7 @@ import ChatRecordingViewOnceButtonNode
 import ChatRecordingPreviewInputPanelNode
 import ChatInputContextPanelNode
 import RasterizedCompositionComponent
+import LegacyLiquidGlass
 
 private let counterFont = Font.with(size: 14.0, design: .regular, traits: [.monospacedNumbers])
 
@@ -687,7 +688,15 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         self.attachmentButton.accessibilityLabel = presentationInterfaceState.strings.VoiceOver_AttachMedia
         self.attachmentButton.accessibilityTraits = [.button]
         self.attachmentButton.isAccessibilityElement = true
-        
+
+        if #available(iOS 26.0, *) {
+
+        } else {
+            self.attachmentButton.setupBackgroundViewLGL(
+                transformViews: [
+                    BackgroundViewLGL.WeakReference(attachmentButton)
+                ])
+        }
         self.attachmentButtonBackground = GlassBackgroundView(frame: CGRect())
         self.attachmentButtonBackground.contentView.addSubview(self.attachmentButton)
         
