@@ -1,58 +1,51 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
-load(
-    "@build_bazel_rules_apple//apple:resources.bzl",
-    "apple_resource_bundle",
-    "apple_resource_group",
-)
-load("//build-system/bazel-utils:plist_fragment.bzl",
-    "plist_fragment",
+load("@build_bazel_rules_apple//apple:resources.bzl", "apple_resource_bundle")
+load("//build-system/bazel-utils:plist_fragment.bzl", "plist_fragment")
+
+plist_fragment(
+    name = "CameraNeoBundleInfoPlist",
+    extension = "plist",
+    template =
+    """
+    <key>CFBundleIdentifier</key>
+    <string>org.telegram.CameraNeo</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleName</key>
+    <string>CameraNeo</string>
+    """,
 )
 
-filegroup(
-    name = "CameraMetalResources",
-    srcs = glob([
+apple_resource_bundle(
+    name = "CameraNeoBundle",
+    infoplists = [
+        ":CameraNeoBundleInfoPlist",
+    ],
+    resources = glob([
         "MetalResources/**/*.*",
     ]),
     visibility = ["//visibility:public"],
 )
 
-plist_fragment(
-    name = "CameraBundleInfoPlist",
-    extension = "plist",
-    template =
-    """
-    <key>CFBundleIdentifier</key>
-    <string>org.telegram.Camera</string>
-    <key>CFBundleDevelopmentRegion</key>
-    <string>en</string>
-    <key>CFBundleName</key>
-    <string>Camera</string>
-    """
-)
-
-apple_resource_bundle(
-    name = "CameraBundle",
-    infoplists = [
-        ":CameraBundleInfoPlist",
-    ],
-    resources = [
-        ":CameraMetalResources",
-    ],
-    visibility = ["//visibility:public"],
-)
-
 swift_library(
-    name = "Camera",
-    module_name = "Camera",
+    name = "CameraNeo",
+    module_name = "CameraNeo",
     srcs = glob([
         "Sources/**/*.swift",
     ]),
     copts = [
         "-warnings-as-errors",
     ],
+    data = [
+        ":CameraNeoBundle",
+    ],
     deps = [
+        "//submodules/AppBundle",
+        "//submodules/Camera",
+        "//submodules/GZip",
         "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
         "//submodules/Utils/DeviceModel",
+        "//submodules/rlottie:RLottieBinding",
     ],
     visibility = [
         "//visibility:public",
