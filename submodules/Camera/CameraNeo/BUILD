@@ -9,7 +9,7 @@ load("//build-system/bazel-utils:plist_fragment.bzl",
 )
 
 filegroup(
-    name = "CameraMetalResources",
+    name = "CameraNeoMetalResources",
     srcs = glob([
         "MetalResources/**/*.*",
     ]),
@@ -17,42 +17,48 @@ filegroup(
 )
 
 plist_fragment(
-    name = "CameraBundleInfoPlist",
+    name = "CameraNeoBundleInfoPlist",
     extension = "plist",
     template =
     """
     <key>CFBundleIdentifier</key>
-    <string>org.telegram.Camera</string>
+    <string>org.telegram.CameraNeo</string>
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleName</key>
-    <string>Camera</string>
-    """
+    <string>CameraNeo</string>
+    """,
 )
 
 apple_resource_bundle(
-    name = "CameraBundle",
+    name = "CameraNeoBundle",
     infoplists = [
-        ":CameraBundleInfoPlist",
+        ":CameraNeoBundleInfoPlist",
     ],
     resources = [
-        ":CameraMetalResources",
+        ":CameraNeoMetalResources",
     ],
-    visibility = ["//visibility:public"],
 )
 
 swift_library(
-    name = "Camera",
-    module_name = "Camera",
+    name = "CameraNeo",
+    module_name = "CameraNeo",
     srcs = glob([
         "Sources/**/*.swift",
     ]),
     copts = [
         "-warnings-as-errors",
     ],
+    data = [
+        ":CameraNeoBundle",
+    ],
     deps = [
+        "//submodules/AppBundle",
+        "//submodules/Camera",
+        "//submodules/GZip",
         "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
         "//submodules/Utils/DeviceModel",
+        "//submodules/rlottie:RLottieBinding",
     ],
     visibility = [
         "//visibility:public",
