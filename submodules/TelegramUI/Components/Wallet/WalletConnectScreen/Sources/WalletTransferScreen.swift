@@ -2,10 +2,10 @@ import Foundation
 import UIKit
 import Display
 import AccountContext
-import TelegramCore
 import SwiftSignalKit
 import TelegramPresentationData
 import PresentationDataUtils
+import TelegramStringFormatting
 import ComponentFlow
 import ViewControllerComponent
 import SheetComponent
@@ -17,140 +17,44 @@ import WalletContext
 import WalletCardComponent
 import AlertUI
 
-fileprivate enum WalletConnectFinishResult {
+fileprivate enum WalletTransferFinishResult {
     case cancelled
-    case connected
+    case confirmed
 }
 
-final class WalletConnectAppIconComponent: Component {
-    let applicationName: String
-    let url: String?
-
-    init(applicationName: String, url: String?) {
-        self.applicationName = applicationName
-        self.url = url
-    }
-
-    static func ==(lhs: WalletConnectAppIconComponent, rhs: WalletConnectAppIconComponent) -> Bool {
-        return lhs.applicationName == rhs.applicationName && lhs.url == rhs.url
-    }
-
-    final class View: UIView {
-        private let imageView = UIImageView()
-        private let fallbackLabel = UILabel()
-        private var currentUrl: String?
-        private var task: URLSessionDataTask?
-
-        override init(frame: CGRect) {
-            super.init(frame: frame)
-
-            self.clipsToBounds = true
-            self.backgroundColor = UIColor(rgb: 0x2aabee)
-            self.imageView.contentMode = .scaleAspectFill
-            self.fallbackLabel.textAlignment = .center
-            self.fallbackLabel.font = Font.bold(40.0)
-            self.fallbackLabel.textColor = .white
-            self.addSubview(self.fallbackLabel)
-            self.addSubview(self.imageView)
-        }
-
-        required init?(coder: NSCoder) {
-            fatalError("init(coder:) has not been implemented")
-        }
-
-        deinit {
-            self.task?.cancel()
-        }
-
-        func update(component: WalletConnectAppIconComponent, availableSize: CGSize) -> CGSize {
-            let size = CGSize(width: min(availableSize.width, 88.0), height: min(availableSize.height, 88.0))
-            self.layer.cornerRadius = size.height / 2.0
-            self.imageView.frame = CGRect(origin: .zero, size: size)
-            self.fallbackLabel.frame = CGRect(origin: .zero, size: size)
-            self.fallbackLabel.text = component.applicationName.first.map { String($0).uppercased() }
-
-            if self.currentUrl != component.url {
-                self.currentUrl = component.url
-                self.task?.cancel()
-                self.task = nil
-                self.imageView.image = nil
-                self.fallbackLabel.isHidden = false
-
-                if let urlString = component.url,
-                   let url = URL(string: urlString),
-                   url.scheme?.lowercased() == "https" {
-                    var request = URLRequest(url: url)
-                    request.timeoutInterval = 15.0
-                    let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
-                        guard let data,
-                              data.count <= 2 * 1024 * 1024,
-                              let response = response as? HTTPURLResponse,
-                              (200 ..< 300).contains(response.statusCode),
-                              let image = UIImage(data: data) else {
-                            return
-                        }
-                        Queue.mainQueue().async {
-                            guard let self, self.currentUrl == urlString else {
-                                return
-                            }
-                            self.imageView.image = image
-                            self.fallbackLabel.isHidden = true
-                        }
-                    }
-                    self.task = task
-                    task.resume()
-                }
-            }
-            return size
-        }
-    }
-
-    func makeView() -> View {
-        return View(frame: .zero)
-    }
-
-    func update(view: View, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: ComponentTransition) -> CGSize {
-        return view.update(component: self, availableSize: availableSize)
-    }
-}
-
-private final class WalletConnectSheetContent: CombinedComponent {
+private final class WalletTransferSheetContent: CombinedComponent {
     typealias EnvironmentType = ViewControllerComponentContainer.Environment
 
     let context: AccountContext
     let walletContext: WalletContext
-    let request: WalletContext.TonConnectRequest
-    let connect: (@escaping (Result<Void, WalletContext.WalletError>) -> Void) -> Void
+    let request: WalletContext.TonConnectTransferRequest
+    let confirm: (@escaping (Result<Void, WalletContext.WalletError>) -> Void) -> Void
+    let updateIsBusy: (Bool) -> Void
     let animateOut: ActionSlot<Action<Void>>
     let getController: () -> ViewController?
 
     init(
         context: AccountContext,
         walletContext: WalletContext,
-        request: WalletContext.TonConnectRequest,
-        connect: @escaping (@escaping (Result<Void, WalletContext.WalletError>) -> Void) -> Void,
+        request: WalletContext.TonConnectTransferRequest,
+        confirm: @escaping (@escaping (Result<Void, WalletContext.WalletError>) -> Void) -> Void,
+        updateIsBusy: @escaping (Bool) -> Void,
         animateOut: ActionSlot<Action<Void>>,
         getController: @escaping () -> ViewController?
     ) {
         self.context = context
         self.walletContext = walletContext
         self.request = request
-        self.connect = connect
+        self.confirm = confirm
+        self.updateIsBusy = updateIsBusy
         self.animateOut = animateOut
         self.getController = getController
     }
 
-    static func ==(lhs: WalletConnectSheetContent, rhs: WalletConnectSheetContent) -> Bool {
-        if lhs.context !== rhs.context {
-            return false
-        }
-        if lhs.walletContext !== rhs.walletContext {
-            return false
-        }
-        if lhs.request != rhs.request {
-            return false
-        }
-        return true
+    static func ==(lhs: WalletTransferSheetContent, rhs: WalletTransferSheetContent) -> Bool {
+        return lhs.context === rhs.context
+            && lhs.walletContext === rhs.walletContext
+            && lhs.request == rhs.request
     }
 
     final class State: ComponentState {
@@ -158,11 +62,10 @@ private final class WalletConnectSheetContent: CombinedComponent {
         private let disposables = DisposableSet()
 
         fileprivate var walletState: WalletContext.State?
-        fileprivate var accountName = ""
-        fileprivate var isConnecting = false
+        fileprivate var isAuthorizing = false
+        fileprivate var isConfirming = false
 
         init(
-            context: AccountContext,
             walletContext: WalletContext,
             getController: @escaping () -> ViewController?
         ) {
@@ -178,107 +81,85 @@ private final class WalletConnectSheetContent: CombinedComponent {
                 self.walletState = walletState
                 self.updated(transition: .easeInOut(duration: 0.25))
             }))
-
-            self.disposables.add((context.engine.data.subscribe(
-                TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId)
-            )
-            |> deliverOnMainQueue).start(next: { [weak self] peer in
-                guard let self else {
-                    return
-                }
-                let accountName = peer?.debugDisplayTitle.uppercased() ?? ""
-                if self.accountName != accountName {
-                    self.accountName = accountName
-                    self.updated(transition: .immediate)
-                }
-            }))
         }
 
         deinit {
             self.disposables.dispose()
         }
 
-        func finish(_ result: WalletConnectFinishResult, animated: Bool, animateOut: ActionSlot<Action<Void>>) {
-            guard let controller = self.getController() as? WalletConnectScreen else {
+        func finish(_ result: WalletTransferFinishResult, animated: Bool, animateOut: ActionSlot<Action<Void>>) {
+            guard let controller = self.getController() as? WalletTransferScreen else {
                 return
             }
             controller.finish(result, animated: animated, animateOut: animateOut)
         }
 
-        func connect(component: WalletConnectSheetContent) {
-            guard !self.isConnecting else {
+        func confirm(component: WalletTransferSheetContent) {
+            guard !self.isAuthorizing, !self.isConfirming else {
                 return
             }
-            self.isConnecting = true
+            self.isAuthorizing = true
+            component.updateIsBusy(true)
             self.updated(transition: .easeInOut(duration: 0.2))
-            
-            component.connect({ [weak self] result in
-                guard let self else {
-                    return
-                }
-                switch result {
-                case .success:
-                    self.finish(.connected, animated: true, animateOut: component.animateOut)
-                case .failure:
-                    self.isConnecting = false
-                    self.updated(transition: .easeInOut(duration: 0.2))
-                    guard let controller = self.getController() else {
+
+            component.context.sharedContext.authorizeWalletAccess(context: component.context, completion: { [weak self] authorized in
+                Queue.mainQueue().async {
+                    guard let self, self.isAuthorizing else {
                         return
                     }
-                    //TODO:localize
-                    let errorText = "Unable to connect this app. Please try again."
-                    let presentationData = component.context.sharedContext.currentPresentationData.with { $0 }
-                    controller.present(textAlertController(
-                        context: component.context,
-                        title: nil,
-                        text: errorText,
-                        actions: [
-                            TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_OK, action: {})
-                        ]
-                    ), in: .window(.root))
+                    self.isAuthorizing = false
+                    guard authorized else {
+                        component.updateIsBusy(false)
+                        self.updated(transition: .easeInOut(duration: 0.2))
+                        return
+                    }
+
+                    self.isConfirming = true
+                    self.updated(transition: .easeInOut(duration: 0.2))
+                    component.confirm({ [weak self] result in
+                        guard let self else {
+                            return
+                        }
+                        switch result {
+                        case .success:
+                            self.finish(.confirmed, animated: true, animateOut: component.animateOut)
+                        case .failure:
+                            self.isConfirming = false
+                            component.updateIsBusy(false)
+                            self.updated(transition: .easeInOut(duration: 0.2))
+                            guard let controller = self.getController() else {
+                                return
+                            }
+                            //TODO:localize
+                            let errorText = "Unable to send this transaction. Please try again."
+                            let presentationData = component.context.sharedContext.currentPresentationData.with { $0 }
+                            controller.present(textAlertController(
+                                context: component.context,
+                                title: nil,
+                                text: errorText,
+                                actions: [
+                                    TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_OK, action: {})
+                                ]
+                            ), in: .window(.root))
+                        }
+                    })
                 }
             })
-        }
-
-        func openReceive(context: AccountContext, address: String) {
-            guard let controller = self.getController() else {
-                return
-            }
-            let receiveController = context.sharedContext.makeWalletReceiveScreen(
-                context: context,
-                address: address
-            )
-            if controller.navigationController != nil {
-                controller.push(receiveController)
-            } else {
-                controller.window?.present(
-                    receiveController,
-                    on: .root,
-                    blockInteraction: false,
-                    completion: {
-                    }
-                )
-            }
         }
     }
 
     func makeState() -> State {
-        return State(
-            context: self.context,
-            walletContext: self.walletContext,
-            getController: self.getController
-        )
+        return State(walletContext: self.walletContext, getController: self.getController)
     }
 
     static var body: Body {
         let appIcon = Child(WalletConnectAppIconComponent.self)
         let title = Child(BalancedTextComponent.self)
         let domain = Child(HStack<Empty>.self)
-        let permission = Child(BalancedTextComponent.self)
-        let card = Child(WalletCardComponent.self)
-        let disclaimer = Child(BalancedTextComponent.self)
+        let card = Child(WalletTransferCardComponent.self)
+        let fee = Child(BalancedTextComponent.self)
         let cancelButton = Child(ButtonComponent.self)
-        let connectButton = Child(ButtonComponent.self)
+        let confirmButton = Child(ButtonComponent.self)
         let closeButton = Child(GlassBarButtonComponent.self)
 
         return { context in
@@ -304,7 +185,6 @@ private final class WalletConnectSheetContent: CombinedComponent {
                 x: contentCenterX,
                 y: contentHeight + appIconSize.height / 2.0
             )
-
             let appIcon = appIcon.update(
                 component: WalletConnectAppIconComponent(
                     applicationName: component.request.applicationName,
@@ -322,7 +202,7 @@ private final class WalletConnectSheetContent: CombinedComponent {
             contentHeight += 18.0
 
             //TODO:localize
-            let titleText = "Connect to \(component.request.applicationName)"
+            let titleText = "\(component.request.applicationName) requests a transfer"
             let title = title.update(
                 component: BalancedTextComponent(
                     text: .plain(NSAttributedString(
@@ -364,95 +244,55 @@ private final class WalletConnectSheetContent: CombinedComponent {
             contentHeight += domain.size.height
             contentHeight += 20.0
 
-            var permissionTexts = component.request.permissions.compactMap { permission -> String? in
-                if let text = permission.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
-                    return text
-                }
-                if let title = permission.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
-                    return title
-                }
-                return nil
-            }
-            if component.request.requestsProof {
-                //TODO:localize
-                let proofText = "It will ask you to prove ownership of this wallet to \(component.request.domain)."
-                if !permissionTexts.contains(proofText) {
-                    permissionTexts.append(proofText)
-                }
-            }
-            if permissionTexts.isEmpty {
-                //TODO:localize
-                permissionTexts.append("It will be able to view your wallet address.")
-            }
-            let permissionText = permissionTexts.joined(separator: "\n\n")
-            let permission = permission.update(
-                component: BalancedTextComponent(
-                    text: .plain(NSAttributedString(
-                        string: permissionText,
-                        font: Font.regular(15.0),
-                        textColor: primaryTextColor
-                    )),
-                    horizontalAlignment: .center,
-                    maximumNumberOfLines: 0,
-                    lineSpacing: 0.2
-                ),
-                availableSize: CGSize(width: textWidth, height: context.availableSize.height),
-                transition: .immediate
-            )
-            context.add(permission.position(CGPoint(
-                x: contentCenterX,
-                y: contentHeight + permission.size.height / 2.0
-            )))
-            contentHeight += permission.size.height
-            contentHeight += 18.0
-
-            let cardWidth = min(361.0, max(1.0, safeContentWidth - 42.0))
-            let walletInfo: WalletContext.WalletInfo?
-            if let walletState = state.walletState, case let .wallet(value) = walletState.phase {
-                walletInfo = value
-            } else {
-                walletInfo = nil
-            }
             let fiatCurrency = state.walletState?.fiat.selectedCurrency ?? .usd
             let fiatRate = state.walletState?.fiat.selectedRate
+            let cardWidth = min(361.0, max(1.0, safeContentWidth - 42.0))
             let card = card.update(
-                component: WalletCardComponent(
-                    balance: state.walletState?.balance.currentValue,
+                component: WalletTransferCardComponent(
+                    amount: component.request.amount,
+                    recipient: component.request.recipient,
                     fiatCurrency: fiatCurrency,
                     fiatRate: fiatRate,
-                    dateTimeFormat: environment.dateTimeFormat,
-                    name: state.accountName,
-                    address: walletInfo?.address ?? "",
-                    qrPressed: { [weak state] in
-                        guard let walletInfo else {
-                            return
-                        }
-                        state?.openReceive(
-                            context: component.context,
-                            address: walletInfo.address
-                        )
-                    }
+                    dateTimeFormat: environment.dateTimeFormat
                 ),
                 availableSize: CGSize(width: cardWidth, height: context.availableSize.height),
                 transition: context.transition
             )
-            context.add(card.position(
-                CGPoint(
+            context.add(card
+                .position(CGPoint(
                     x: contentCenterX,
                     y: contentHeight + card.size.height / 2.0
                 ))
                 .clipsToBounds(true)
-                //.cornerRadius(24.0)
             )
             contentHeight += card.size.height
             contentHeight += 18.0
 
-            //TODO:localize
-            let disclaimerText = "\(component.request.applicationName) won’t be able to move funds without permission."
-            let disclaimer = disclaimer.update(
+            let formattedFee = formatTonAmountText(
+                component.request.fee,
+                dateTimeFormat: environment.dateTimeFormat,
+                maxDecimalPositions: 9
+            )
+            let feeText: String
+            if let fiatRate {
+                let fiatFee = formatTonFiatValue(
+                    component.request.fee,
+                    divide: true,
+                    rate: fiatRate.unitsPerGram,
+                    currencySymbol: fiatCurrency.symbol,
+                    maxDecimalPositions: 4,
+                    dateTimeFormat: environment.dateTimeFormat
+                )
+                //TODO:localize
+                feeText = "Network fee: \(formattedFee) Grams (≈\(fiatFee))."
+            } else {
+                //TODO:localize
+                feeText = "Network fee: \(formattedFee) Grams."
+            }
+            let fee = fee.update(
                 component: BalancedTextComponent(
                     text: .plain(NSAttributedString(
-                        string: disclaimerText,
+                        string: feeText,
                         font: Font.regular(13.0),
                         textColor: secondaryTextColor
                     )),
@@ -463,11 +303,11 @@ private final class WalletConnectSheetContent: CombinedComponent {
                 availableSize: CGSize(width: textWidth, height: context.availableSize.height),
                 transition: .immediate
             )
-            context.add(disclaimer.position(CGPoint(
+            context.add(fee.position(CGPoint(
                 x: contentCenterX,
-                y: contentHeight + disclaimer.size.height / 2.0
+                y: contentHeight + fee.size.height / 2.0
             )))
-            contentHeight += disclaimer.size.height
+            contentHeight += fee.size.height
             contentHeight += 20.0
 
             let buttonSpacing: CGFloat = 10.0
@@ -478,7 +318,8 @@ private final class WalletConnectSheetContent: CombinedComponent {
             )
             let buttonsWidth = max(2.0, safeContentWidth - buttonInsets.left - buttonInsets.right)
             let cancelButtonWidth = floorToScreenPixels((buttonsWidth - buttonSpacing) / 2.0)
-            let connectButtonWidth = buttonsWidth - buttonSpacing - cancelButtonWidth
+            let confirmButtonWidth = buttonsWidth - buttonSpacing - cancelButtonWidth
+            let isBusy = state.isAuthorizing || state.isConfirming
 
             //TODO:localize
             let cancelTitle = "Cancel"
@@ -499,7 +340,7 @@ private final class WalletConnectSheetContent: CombinedComponent {
                             color: theme.list.itemPrimaryTextColor
                         ))
                     ),
-                    isEnabled: !state.isConnecting,
+                    isEnabled: !isBusy,
                     action: { [weak state] in
                         state?.finish(.cancelled, animated: true, animateOut: component.animateOut)
                     }
@@ -513,8 +354,8 @@ private final class WalletConnectSheetContent: CombinedComponent {
             )))
 
             //TODO:localize
-            let connectTitle = "Connect"
-            let connectButton = connectButton.update(
+            let confirmTitle = "Confirm"
+            let confirmButton = confirmButton.update(
                 component: ButtonComponent(
                     background: ButtonComponent.Background(
                         style: .glass,
@@ -524,27 +365,27 @@ private final class WalletConnectSheetContent: CombinedComponent {
                         cornerRadius: 26.0
                     ),
                     content: AnyComponentWithIdentity(
-                        id: "connect",
+                        id: "confirm",
                         component: AnyComponent(Text(
-                            text: connectTitle,
+                            text: confirmTitle,
                             font: Font.semibold(17.0),
                             color: theme.list.itemCheckColors.foregroundColor
                         ))
                     ),
-                    isEnabled: !state.isConnecting,
-                    displaysProgress: state.isConnecting,
+                    isEnabled: !isBusy,
+                    displaysProgress: state.isConfirming,
                     action: { [weak state] in
-                        state?.connect(component: component)
+                        state?.confirm(component: component)
                     }
                 ),
-                availableSize: CGSize(width: connectButtonWidth, height: 52.0),
+                availableSize: CGSize(width: confirmButtonWidth, height: 52.0),
                 transition: context.transition
             )
-            context.add(connectButton.position(CGPoint(
-                x: contentCenterX + buttonSpacing / 2.0 + connectButton.size.width / 2.0,
-                y: contentHeight + connectButton.size.height / 2.0
+            context.add(confirmButton.position(CGPoint(
+                x: contentCenterX + buttonSpacing / 2.0 + confirmButton.size.width / 2.0,
+                y: contentHeight + confirmButton.size.height / 2.0
             )))
-            contentHeight += max(cancelButton.size.height, connectButton.size.height)
+            contentHeight += max(cancelButton.size.height, confirmButton.size.height)
             contentHeight += buttonInsets.bottom
 
             let closeButton = closeButton.update(
@@ -561,10 +402,10 @@ private final class WalletConnectSheetContent: CombinedComponent {
                         ))
                     ),
                     action: { [weak state] _ in
-                        guard state?.isConnecting == false else {
+                        guard let state, !state.isAuthorizing, !state.isConfirming else {
                             return
                         }
-                        state?.finish(.cancelled, animated: true, animateOut: component.animateOut)
+                        state.finish(.cancelled, animated: true, animateOut: component.animateOut)
                     }
                 ),
                 availableSize: CGSize(width: 44.0, height: 44.0),
@@ -580,37 +421,46 @@ private final class WalletConnectSheetContent: CombinedComponent {
     }
 }
 
-private final class WalletConnectSheetComponent: CombinedComponent {
+private final class WalletTransferSheetComponent: CombinedComponent {
     typealias EnvironmentType = ViewControllerComponentContainer.Environment
 
     let context: AccountContext
     let walletContext: WalletContext
-    let request: WalletContext.TonConnectRequest
-    let connect: (@escaping (Result<Void, WalletContext.WalletError>) -> Void) -> Void
+    let request: WalletContext.TonConnectTransferRequest
+    let confirm: (@escaping (Result<Void, WalletContext.WalletError>) -> Void) -> Void
 
     init(
         context: AccountContext,
         walletContext: WalletContext,
-        request: WalletContext.TonConnectRequest,
-        connect: @escaping (@escaping (Result<Void, WalletContext.WalletError>) -> Void) -> Void
+        request: WalletContext.TonConnectTransferRequest,
+        confirm: @escaping (@escaping (Result<Void, WalletContext.WalletError>) -> Void) -> Void
     ) {
         self.context = context
         self.walletContext = walletContext
         self.request = request
-        self.connect = connect
+        self.confirm = confirm
     }
 
-    static func ==(lhs: WalletConnectSheetComponent, rhs: WalletConnectSheetComponent) -> Bool {
-        if lhs.context !== rhs.context {
-            return false
+    static func ==(lhs: WalletTransferSheetComponent, rhs: WalletTransferSheetComponent) -> Bool {
+        return lhs.context === rhs.context
+            && lhs.walletContext === rhs.walletContext
+            && lhs.request == rhs.request
+    }
+
+    final class State: ComponentState {
+        fileprivate var isBusy = false
+
+        func updateIsBusy(_ value: Bool) {
+            guard self.isBusy != value else {
+                return
+            }
+            self.isBusy = value
+            self.updated(transition: .easeInOut(duration: 0.2))
         }
-        if lhs.walletContext !== rhs.walletContext {
-            return false
-        }
-        if lhs.request != rhs.request {
-            return false
-        }
-        return true
+    }
+
+    func makeState() -> State {
+        return State()
     }
 
     static var body: Body {
@@ -621,14 +471,18 @@ private final class WalletConnectSheetComponent: CombinedComponent {
         return { context in
             let environment = context.environment[EnvironmentType.self]
             let controller = environment.controller
+            let componentState = context.state
 
             let sheet = sheet.update(
                 component: SheetComponent<EnvironmentType>(
-                    content: AnyComponent<EnvironmentType>(WalletConnectSheetContent(
+                    content: AnyComponent<EnvironmentType>(WalletTransferSheetContent(
                         context: context.component.context,
                         walletContext: context.component.walletContext,
                         request: context.component.request,
-                        connect: context.component.connect,
+                        confirm: context.component.confirm,
+                        updateIsBusy: { [weak componentState] value in
+                            componentState?.updateIsBusy(value)
+                        },
                         animateOut: animateOut,
                         getController: controller
                     )),
@@ -636,6 +490,7 @@ private final class WalletConnectSheetComponent: CombinedComponent {
                     backgroundColor: .color(environment.theme.actionSheet.opaqueItemBackgroundColor),
                     followContentSizeChanges: true,
                     clipsContent: true,
+                    isScrollEnabled: !componentState.isBusy,
                     autoAnimateOut: false,
                     externalState: sheetExternalState,
                     animateOut: animateOut,
@@ -654,12 +509,11 @@ private final class WalletConnectSheetComponent: CombinedComponent {
                         hasInputHeight: !environment.inputHeight.isZero,
                         regularMetricsSize: CGSize(width: 430.0, height: 900.0),
                         dismiss: { animated in
-                            if let controller = controller() as? WalletConnectScreen {
-                                controller.finish(
-                                    .cancelled,
-                                    animated: animated,
-                                    animateOut: animateOut
-                                )
+                            guard !componentState.isBusy else {
+                                return
+                            }
+                            if let controller = controller() as? WalletTransferScreen {
+                                controller.finish(.cancelled, animated: animated, animateOut: animateOut)
                             }
                         }
                     )
@@ -667,7 +521,6 @@ private final class WalletConnectSheetComponent: CombinedComponent {
                 availableSize: context.availableSize,
                 transition: context.transition
             )
-
             context.add(sheet.position(CGPoint(
                 x: context.availableSize.width / 2.0,
                 y: context.availableSize.height / 2.0
@@ -680,7 +533,6 @@ private final class WalletConnectSheetComponent: CombinedComponent {
                     sideInset = floor((context.availableSize.width - 430.0) / 2.0) - 12.0
                     bottomInset = (context.availableSize.height - sheetExternalState.contentHeight) / 2.0 + sheetExternalState.contentHeight
                 }
-
                 let layout = ContainerViewLayout(
                     size: context.availableSize,
                     metrics: environment.metrics,
@@ -703,32 +555,31 @@ private final class WalletConnectSheetComponent: CombinedComponent {
                     transition: context.transition.containedViewLayoutTransition
                 )
             }
-
             return context.availableSize
         }
     }
 }
 
-public final class WalletConnectScreen: ViewControllerComponentContainer {
+public final class WalletTransferScreen: ViewControllerComponentContainer {
     private let cancelled: () -> Void
-    private var finishResult: WalletConnectFinishResult?
+    private var finishResult: WalletTransferFinishResult?
 
     public init(
         context: AccountContext,
         walletContext: WalletContext,
-        request: WalletContext.TonConnectRequest,
+        request: WalletContext.TonConnectTransferRequest,
         cancelled: @escaping () -> Void,
-        connect: @escaping (@escaping (Result<Void, WalletContext.WalletError>) -> Void) -> Void
+        confirm: @escaping (@escaping (Result<Void, WalletContext.WalletError>) -> Void) -> Void
     ) {
         self.cancelled = cancelled
 
         super.init(
             context: context,
-            component: WalletConnectSheetComponent(
+            component: WalletTransferSheetComponent(
                 context: context,
                 walletContext: walletContext,
                 request: request,
-                connect: connect
+                confirm: confirm
             ),
             navigationBarAppearance: .none,
             statusBarStyle: .ignore,
@@ -745,12 +596,11 @@ public final class WalletConnectScreen: ViewControllerComponentContainer {
 
     public override func viewDidLoad() {
         super.viewDidLoad()
-
         self.view.disablesInteractiveModalDismiss = true
     }
 
     fileprivate func finish(
-        _ result: WalletConnectFinishResult,
+        _ result: WalletTransferFinishResult,
         animated: Bool,
         animateOut: ActionSlot<Action<Void>>?
     ) {
@@ -763,7 +613,7 @@ public final class WalletConnectScreen: ViewControllerComponentContainer {
         switch result {
         case .cancelled:
             callback = self.cancelled
-        case .connected:
+        case .confirmed:
             callback = {}
         }
 
@@ -774,7 +624,6 @@ public final class WalletConnectScreen: ViewControllerComponentContainer {
             }
             self.dismiss(completion: callback)
         }
-
         if animated, let animateOut {
             animateOut.invoke(Action { _ in
                 dismissController()

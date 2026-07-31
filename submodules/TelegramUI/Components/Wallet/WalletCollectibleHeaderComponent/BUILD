@@ -1,8 +1,8 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 
 swift_library(
-    name = "WalletCollectibleItemComponent",
-    module_name = "WalletCollectibleItemComponent",
+    name = "WalletCollectibleHeaderComponent",
+    module_name = "WalletCollectibleHeaderComponent",
     srcs = glob([
         "Sources/**/*.swift",
     ]),
@@ -10,12 +10,14 @@ swift_library(
         "-warnings-as-errors",
     ],
     deps = [
-        "//submodules/Display",
-        "//submodules/ComponentFlow",
-        "//submodules/Components/MultilineTextComponent",
-        "//submodules/TelegramPresentationData",
         "//submodules/AccountContext",
-        "//submodules/TelegramUI/Components/Wallet/WalletContext",
+        "//submodules/Display",
+        "//submodules/SSignalKit/SwiftSignalKit",
+        "//submodules/TelegramPresentationData",
+        "//submodules/ComponentFlow",
+        "//submodules/Components/BundleIconComponent",
+        "//submodules/Components/MultilineTextComponent",
+        "//submodules/TelegramUI/Components/LottieComponent",
         "//submodules/TelegramUI/Components/Wallet/WalletCollectibleImageComponent",
     ],
     visibility = [
