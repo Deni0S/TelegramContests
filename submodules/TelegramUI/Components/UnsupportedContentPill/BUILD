@@ -3,8 +3,8 @@ load("@build_bazel_rules_apple//apple:ios.bzl", "ios_unit_test")
 load("@build_bazel_rules_apple//apple/testing/default_runner:ios_test_runner.bzl", "ios_test_runner")
 
 swift_library(
-    name = "ChatMessageBackground",
-    module_name = "ChatMessageBackground",
+    name = "UnsupportedContentPill",
+    module_name = "UnsupportedContentPill",
     srcs = glob([
         "Sources/**/*.swift",
     ]),
@@ -12,11 +12,11 @@ swift_library(
         "-warnings-as-errors",
     ],
     deps = [
-        "//submodules/AsyncDisplayKit:AsyncDisplayKit",
-    	"//submodules/Display:Display",
-    	"//submodules/TelegramPresentationData:TelegramPresentationData",
-    	"//submodules/WallpaperBackgroundNode:WallpaperBackgroundNode",
-    	"//submodules/AppBundle:AppBundle",
+        "//submodules/Display",
+        "//submodules/AsyncDisplayKit",
+        "//submodules/TelegramPresentationData",
+        "//submodules/WallpaperBackgroundNode",
+        "//submodules/AppBundle",
     ],
     visibility = [
         "//visibility:public",
@@ -24,32 +24,31 @@ swift_library(
 )
 
 swift_library(
-    name = "ChatMessageBackgroundTestsLib",
+    name = "UnsupportedContentPillTestsLib",
     testonly = True,
     srcs = glob([
         "Tests/**/*.swift",
     ]),
     deps = [
-        ":ChatMessageBackground",
-        "//submodules/Display:Display",
-        "//submodules/AsyncDisplayKit:AsyncDisplayKit",
+        ":UnsupportedContentPill",
+        "//submodules/Display",
     ],
 )
 
 # The runner MUST pin a real device/OS: the default runner picks an invalid
 # device and the test process exits 15. Matches //submodules/InstantPageUI:InstantPageUITests.
 ios_test_runner(
-    name = "ChatMessageBackgroundTestRunner",
+    name = "UnsupportedContentPillTestRunner",
     device_type = "iPhone 17",
     os_version = "26.5",
 )
 
 ios_unit_test(
-    name = "ChatMessageBackgroundTests",
+    name = "UnsupportedContentPillTests",
     minimum_os_version = "13.0",
-    runner = ":ChatMessageBackgroundTestRunner",
+    runner = ":UnsupportedContentPillTestRunner",
     deps = [
-        ":ChatMessageBackgroundTestsLib",
+        ":UnsupportedContentPillTestsLib",
     ],
     visibility = [
         "//visibility:public",
